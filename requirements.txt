@@ -4,3 +4,4 @@ google-generativeai==0.3.2
 pytz==2023.3.post1
 beautifulsoup4==4.12.2
 lxml>=5.1.0
+feedparser>=6.0.10
