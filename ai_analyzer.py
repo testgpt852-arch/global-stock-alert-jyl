@@ -9,14 +9,18 @@ logger = logging.getLogger(__name__)
 class AIAnalyzer:
     def __init__(self, api_key):
         genai.configure(api_key=api_key)
-self.model_candidates = [
+        # [변경됨] 사진에 있는 모델 중 3가지를 우선순위대로 나열
+        # 1. 메인 (2.5 Flash)
+        # 2. 백업 (2.5 Flash Lite - 가볍고 빠름)
+        # 3. 예비 (3 Flash - 최신 모델)
+        self.model_candidates = [
             'gemini-2.5-flash',
             'gemini-2.5-flash-lite',
             'gemini-3-flash'
-            'Gemma-3-27B'
+            'gemma-3-27b'
         ]
-
-async def analyze_opportunity(self, stock_data):
+        
+    async def analyze_opportunity(self, stock_data):
         """투자 기회 AI 분석 (멀티 모델 지원)"""
         
         # [변경됨] 여러 모델을 순차적으로 시도하는 로직으로 변경
