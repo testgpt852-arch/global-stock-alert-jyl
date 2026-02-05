@@ -16,7 +16,7 @@ class AIAnalyzer:
         self.model_candidates = [
             'gemini-2.5-flash',
             'gemini-2.5-flash-lite',
-            'gemini-3-flash'
+            'gemini-3-flash',
             'gemma-3-27b'
         ]
         
