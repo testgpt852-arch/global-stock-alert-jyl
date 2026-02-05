@@ -9,32 +9,49 @@ logger = logging.getLogger(__name__)
 class AIAnalyzer:
     def __init__(self, api_key):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+self.model_candidates = [
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-3-flash'
+            'Gemma-3-27B'
+        ]
+
+async def analyze_opportunity(self, stock_data):
+        """투자 기회 AI 분석 (멀티 모델 지원)"""
         
-    async def analyze_opportunity(self, stock_data):
-        """투자 기회 AI 분석"""
-        try:
-            prompt = self._create_analysis_prompt(stock_data)
-            
-            # 비동기 API 호출
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                prompt
-            )
-            
-            # JSON 파싱
-            analysis = self._parse_response(response.text)
-            
-            # 검증
-            analysis = self._validate_analysis(analysis, stock_data)
-            
-            logger.info(f"✅ AI analysis complete for {stock_data['symbol']}: {analysis['score']}/10")
-            
-            return analysis
-            
-        except Exception as e:
-            logger.error(f"AI analysis error: {e}")
-            return self._get_fallback_analysis(stock_data)
+        # [변경됨] 여러 모델을 순차적으로 시도하는 로직으로 변경
+        for model_name in self.model_candidates:
+            try:
+                # 비동기 처리를 위해 모델 객체를 루프 안에서 생성 (필요 시)
+                model = genai.GenerativeModel(model_name)
+                
+                prompt = self._create_analysis_prompt(stock_data)
+                
+                # 비동기 API 호출
+                response = await asyncio.to_thread(
+                    model.generate_content,
+                    prompt
+                )
+                
+                # JSON 파싱
+                analysis = self._parse_response(response.text)
+                
+                # 검증
+                analysis = self._validate_analysis(analysis, stock_data)
+                
+                logger.info(f"✅ AI analysis complete for {stock_data['symbol']} using [{model_name}]: {analysis['score']}/10")
+                
+                # 성공하면 즉시 반환 (더 이상 다른 모델 시도 안 함)
+                return analysis
+                
+            except Exception as e:
+                # [추가됨] 실패 시 로그만 남기고 다음 모델 시도
+                logger.warning(f"⚠️ Model [{model_name}] failed: {e}. Trying next model...")
+                continue
+        
+        # 모든 모델 실패 시
+        logger.error("❌ All AI models failed.")
+        return self._get_fallback_analysis(stock_data)
     
     def _create_analysis_prompt(self, stock):
         """분석 프롬프트 생성"""
