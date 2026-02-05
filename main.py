@@ -32,7 +32,7 @@ class GlobalStockAlertSystem:
             self.kr_scanner = KRStockScanner(self.telegram, self.ai)
             
             self.alerted_stocks = {}
-            self.alert_cooldown = 3600  # 1시간
+            self.alert_cooldown = 14400  # 1시간
             
             logger.info("✅ 시스템 초기화 완료")
             
@@ -253,7 +253,7 @@ class GlobalStockAlertSystem:
         except Exception as e:
             logger.error(f"시작 메시지 전송 실패: {e}")
         
-        scan_interval = 10
+        scan_interval = 30
         error_count = 0
         max_errors = 10
         
