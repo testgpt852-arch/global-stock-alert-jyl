@@ -36,15 +36,40 @@ class Config:
     
     # 뉴스 키워드
     POSITIVE_KEYWORDS = [
-        'fda approval', 'clinical trial', 'merger', 'acquisition',
-        'earnings beat', 'partnership', 'contract', 'patent',
-        'breakthrough', 'launch', '승인', '계약', '수주'
+        # FDA/의료
+        'fda approval', 'fda approved', 'clinical trial', 'phase 3',
+        'breakthrough', 'cure', 'treatment approved', '승인',
+        
+        # M&A
+        'merger', 'acquisition', 'buyout', 'takeover', 'acquired by',
+        
+        # 실적
+        'earnings beat', 'revenue growth', 'profit surge',
+        'guidance raised', 'record earnings',
+        
+        # 계약/파트너십
+        'partnership', 'contract won', 'deal signed', 'agreement', '계약', '수주',
+        
+        # 제품
+        'product launch', 'new product', 'patent approved',
+        
+        # 투자
+        'investment', 'funding round', 'raised capital'
     ]
     
     NEGATIVE_KEYWORDS = [
-        'rumor', 'speculation', 'investigation', 'lawsuit',
-        '루머', '추정', '적자'
+        # 루머/추측
+        'rumor', 'speculation', 'could', 'may', 'might',
+        'analyst says', 'analyst thinks', '루머', '추정'
+        
+        # 부정 이슈
+        'investigation', 'lawsuit', 'recall', 'warning',
+        'delay', 'failed', 'rejected', 'declined', '적자',
     ]
+
+    # Reddit 설정
+    REDDIT_MIN_MENTIONS = 10  # 최소 언급 횟수
+    REDDIT_SUBREDDITS = ['wallstreetbets', 'stocks', 'investing']
 
 try:
     Config.validate()
