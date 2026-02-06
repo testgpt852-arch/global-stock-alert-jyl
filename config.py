@@ -7,7 +7,7 @@ class Config:
     # API Keys
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', "AIzaSyBe4VCVB7vHTSXbf1SpA4XLao1tn5xn9_Q")
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     FINNHUB_API_KEY = os.getenv('FINNHUB_API_KEY')
     ALPHA_VANTAGE_KEY = os.getenv('ALPHA_VANTAGE_KEY')
     
