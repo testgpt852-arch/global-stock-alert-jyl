@@ -1,192 +1,121 @@
 import google.generativeai as genai
-import asyncio
 import logging
 import json
-import re
+import asyncio
+from config import Config
 
 logger = logging.getLogger(__name__)
 
 class AIAnalyzer:
-    def __init__(self, api_key):
-        genai.configure(api_key=api_key)
-        # [변경됨] 사진에 있는 모델 중 3가지를 우선순위대로 나열
-        # 1. 메인 (2.5 Flash)
-        # 2. 백업 (2.5 Flash Lite - 가볍고 빠름)
-        # 3. 예비 (3 Flash - 최신 모델)
-        self.model_candidates = [
-            'gemini-2.5-flash',
-            'gemini-2.5-flash-lite',
-            'gemini-3-flash',
-            'gemma-3-27b'
+    def __init__(self, api_key=None):
+        self.api_key = api_key or Config.GEMINI_API_KEY
+        if not self.api_key:
+            logger.error("❌ Gemini API Key가 설정되지 않았습니다.")
+        else:
+            genai.configure(api_key=self.api_key)
+            
+        # [핵심 수정] 사용자님이 지정하신 '지원 가능한 최신 모델'로 전면 교체
+        self.models = [
+            'gemini-3-flash',        # 1순위: 가장 강력한 최신 모델
+            'gemini-2.5-flash',      # 2순위: 안정적인 고성능 모델
+            'gemini-2.5-flash-lite', # 3순위: 속도와 비용 효율성 모델
+            'gemma-3-27b',           # 4순위: 고성능 오픈 모델 (백업용)
         ]
-        
+
     async def analyze_opportunity(self, stock_data):
-        """투자 기회 AI 분석 (멀티 모델 지원)"""
+        """주식/뉴스 데이터 종합 분석 (오류 방지 및 최신 모델 적용)"""
         
-        # [변경됨] 여러 모델을 순차적으로 시도하는 로직으로 변경
-        for model_name in self.model_candidates:
+        # [안전장치] 데이터가 없으면 '정보 없음'으로 처리하여 KeyError 방지
+        # 뉴스 데이터에는 price가 없을 수 있으므로 .get() 필수
+        symbol = stock_data.get('symbol', 'UNKNOWN')
+        price = stock_data.get('price', 'N/A')
+        change = stock_data.get('change_percent', 'N/A')
+        volume = stock_data.get('volume', 'N/A')
+        title = stock_data.get('title', 'N/A') # 뉴스 제목
+        reason = stock_data.get('trigger_reason', '')
+
+        # AI에게 보낼 프롬프트 작성
+        prompt = f"""
+        Act as a Wall Street Hedge Fund Manager. Analyze this stock opportunity.
+        
+        [Target Info]
+        - Ticker: {symbol}
+        - Price: {price}
+        - Change: {change}%
+        - Volume: {volume}
+        - News/Issue: {title}
+        - Detected Reason: {reason}
+
+        [Task]
+        1. Analyze the sentiment of the news or price movement.
+        2. Give a score (1-10) based on short-term profit potential.
+           (News is usually 4-7, Huge breakout is 7-9, Tenbagger material is 9-10)
+        3. Suggest a trading strategy (Entry, Target, Stop Loss).
+           *If price is 'N/A', estimate purely based on news sentiment.*
+        
+        [Output Format]
+        Provide ONLY a JSON object:
+        {{
+            "score": <number 1-10>,
+            "summary": "<One line catchy summary in Korean>",
+            "reasoning": "<Detailed analysis in Korean, under 3 sentences>",
+            "risk_level": "<Low/Medium/High/Extreme>",
+            "recommendation": "<Buy/Wait/Sell>",
+            "entry_price": <number or 0>,
+            "target_price": <number or 0>,
+            "stop_loss": <number or 0>,
+            "upside": <expected upside percentage number>,
+            "risk": <expected risk percentage number>,
+            "position_size": <recommended percentage 5-100>
+        }}
+        """
+
+        # 모델 순차 시도 (Retry Logic)
+        for model_name in self.models:
             try:
-                # 비동기 처리를 위해 모델 객체를 루프 안에서 생성 (필요 시)
                 model = genai.GenerativeModel(model_name)
-                
-                prompt = self._create_analysis_prompt(stock_data)
-                
-                # 비동기 API 호출
-                response = await asyncio.to_thread(
-                    model.generate_content,
-                    prompt
+                response = await model.generate_content_async(
+                    prompt, 
+                    generation_config={"response_mime_type": "application/json"}
                 )
                 
-                # JSON 파싱
-                analysis = self._parse_response(response.text)
+                # 응답 파싱
+                text = response.text.strip()
+                # 가끔 마크다운 코드블럭(```json ... ```)이 섞여올 때 제거
+                if text.startswith("```"):
+                    text = text.replace("```json", "").replace("```", "")
                 
-                # 검증
-                analysis = self._validate_analysis(analysis, stock_data)
+                result = json.loads(text)
                 
-                logger.info(f"✅ AI analysis complete for {stock_data['symbol']} using [{model_name}]: {analysis['score']}/10")
-                
-                # 성공하면 즉시 반환 (더 이상 다른 모델 시도 안 함)
-                return analysis
+                # 필수 필드 검증 및 기본값 채우기
+                return {
+                    "score": result.get("score", 5),
+                    "summary": result.get("summary", "분석 불가"),
+                    "reasoning": result.get("reasoning", "데이터 부족으로 분석할 수 없습니다."),
+                    "risk_level": result.get("risk_level", "High"),
+                    "recommendation": result.get("recommendation", "Wait"),
+                    "entry_price": result.get("entry_price", 0),
+                    "target_price": result.get("target_price", 0),
+                    "stop_loss": result.get("stop_loss", 0),
+                    "upside": result.get("upside", 0),
+                    "risk": result.get("risk", 0),
+                    "position_size": result.get("position_size", 10)
+                }
                 
             except Exception as e:
-                # [추가됨] 실패 시 로그만 남기고 다음 모델 시도
-                logger.warning(f"⚠️ Model [{model_name}] failed: {e}. Trying next model...")
+                # 모델 하나가 실패해도 다음 모델로 넘어감 (로그만 남김)
+                # 예: 429 Quota Exceeded나 모델 없음 오류 시 다음 타자로 자동 교체
+                logger.warning(f"⚠️ Model [{model_name}] failed: {e}. Trying next...")
                 continue
         
-        # 모든 모델 실패 시
+        # 모든 모델 실패 시 기본값 반환 (절대 죽지 않음)
         logger.error("❌ All AI models failed.")
-        return self._get_fallback_analysis(stock_data)
-    
-    def _create_analysis_prompt(self, stock):
-        """분석 프롬프트 생성"""
-        prompt = f"""
-당신은 월가의 전설적인 퀀트 트레이더입니다.
-다음 급등 신호를 분석하고 투자 가치를 평가하세요.
-
-**종목 정보:**
-- 티커: {stock['symbol']}
-- 현재가: ${stock['price']:.2f}
-- 변화율: {stock['change_percent']:+.2f}%
-- 거래량: {stock.get('volume', 'N/A'):,}
-
-**트리거:**
-- 유형: {stock['trigger_type']}
-- 사유: {stock['trigger_reason']}
-
-**당신의 임무:**
-1. 이 기회의 수익 가능성을 1-10점으로 평가
-2. 실전 트레이딩 전략 수립
-3. 리스크 분석
-
-**출력 형식 (JSON만):**
-```json
-{{
-  "score": 8,
-  "summary": "FDA 승인 임박, 역사적 급등 패턴",
-  "entry_price": 8.50,
-  "target_price": 12.00,
-  "stop_loss": 7.80,
-  "upside": 40,
-  "risk": 10,
-  "risk_level": "MEDIUM",
-  "position_size": 5,
-  "reasoning": "과거 유사 사례 평균 +45% 상승"
-}}
-```
-
-**평가 기준:**
-- 9-10점: 텐버거 가능성 (즉시 풀매수)
-- 7-8점: 강력한 기회 (적극 매수)
-- 5-6점: 관망 (지켜보기)
-- 1-4점: 무시
-
-**중요:** 
-- 보수적으로 평가하세요
-- 리스크를 과소평가하지 마세요
-- JSON 형식을 정확히 지켜주세요
-"""
-        return prompt
-    
-    def _parse_response(self, text):
-        """AI 응답 파싱"""
-        try:
-            # JSON 블록 추출
-            if '```json' in text:
-                json_str = text.split('```json')[1].split('```')[0]
-            elif '```' in text:
-                json_str = text.split('```')[1].split('```')[0]
-            else:
-                # JSON 직접 추출 시도
-                json_match = re.search(r'\{.*\}', text, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group()
-                else:
-                    raise ValueError("No JSON found in response")
-            
-            analysis = json.loads(json_str.strip())
-            return analysis
-            
-        except Exception as e:
-            logger.error(f"JSON parsing error: {e}")
-            raise
-    
-    def _validate_analysis(self, analysis, stock_data):
-        """분석 결과 검증 및 보정"""
-        # 필수 필드 확인
-        required_fields = [
-            'score', 'summary', 'entry_price', 'target_price', 
-            'stop_loss', 'upside', 'risk', 'risk_level', 
-            'position_size', 'reasoning'
-        ]
-        
-        for field in required_fields:
-            if field not in analysis:
-                raise ValueError(f"Missing field: {field}")
-        
-        # 값 범위 검증
-        analysis['score'] = max(1, min(10, int(analysis['score'])))
-        analysis['position_size'] = max(1, min(10, int(analysis['position_size'])))
-        
-        # 가격 검증 (현재가 기준)
-        current_price = stock_data['price']
-        
-        if analysis['entry_price'] <= 0:
-            analysis['entry_price'] = current_price
-        
-        if analysis['target_price'] <= current_price:
-            analysis['target_price'] = current_price * 1.2
-        
-        if analysis['stop_loss'] >= current_price:
-            analysis['stop_loss'] = current_price * 0.9
-        
-        # 수익률 재계산
-        analysis['upside'] = ((analysis['target_price'] - current_price) / current_price) * 100
-        analysis['risk'] = ((current_price - analysis['stop_loss']) / current_price) * 100
-        
-        return analysis
-    
-    def _get_fallback_analysis(self, stock_data):
-        """AI 실패 시 기본 분석"""
-        price = stock_data['price']
-        change = stock_data['change_percent']
-        
-        # 변동률 기반 간단 점수
-        if abs(change) >= 10:
-            score = 8
-        elif abs(change) >= 7:
-            score = 7
-        else:
-            score = 6
-        
         return {
-            'score': score,
-            'summary': f'{abs(change):.1f}% 급등 - AI 분석 실패',
-            'entry_price': price,
-            'target_price': price * 1.15,
-            'stop_loss': price * 0.92,
-            'upside': 15,
-            'risk': 8,
-            'risk_level': 'MEDIUM',
-            'position_size': 3,
-            'reasoning': 'AI 분석 오류 - 기본 전략 적용'
+            "score": 0,
+            "summary": "AI 분석 실패",
+            "reasoning": "모든 AI 모델이 응답하지 않습니다. (API 할당량 또는 서버 문제)",
+            "risk_level": "Unknown",
+            "recommendation": "Wait",
+            "entry_price": 0, "target_price": 0, "stop_loss": 0,
+            "upside": 0, "risk": 0, "position_size": 0
         }
