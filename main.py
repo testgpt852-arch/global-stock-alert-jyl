@@ -51,36 +51,26 @@ class GlobalStockAlertSystem:
             logger.critical(f"오류 알림 실패: {e}")
     
     def is_us_market_hours(self):
-        """미국 장시간 체크"""
         try:
             ny_tz = pytz.timezone('America/New_York')
             now = datetime.now(ny_tz)
-            
-            if now.weekday() >= 5:
-                return False
-            
+            if now.weekday() >= 5: return False
             market_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
             market_end = now.replace(hour=20, minute=0, second=0, microsecond=0)
-            
             return market_start <= now <= market_end
         except Exception as e:
             logger.error(f"미국 시간 체크 오류: {e}")
             return True
     
     def is_kr_market_hours(self):
-        """한국 장시간 체크"""
         try:
             kr_tz = pytz.timezone('Asia/Seoul')
             now = datetime.now(kr_tz)
-            
-            if now.weekday() >= 5:
-                return False
-            
+            if now.weekday() >= 5: return False
             from datetime import time
             market_start = time(9, 0)
             market_end = time(15, 30)
             current_time = now.time()
-            
             return market_start <= current_time <= market_end
         except Exception as e:
             logger.error(f"한국 시간 체크 오류: {e}")
@@ -90,25 +80,36 @@ class GlobalStockAlertSystem:
         """중복 알림 방지"""
         now = datetime.now()
         alert_key = f"{market}_{symbol}"
-        
         if alert_key in self.alerted_stocks:
             last_alert = self.alerted_stocks[alert_key]
             if (now - last_alert).seconds < self.alert_cooldown:
                 return False
-        
         self.alerted_stocks[alert_key] = now
         return True
     
     async def process_alert(self, stock_data):
-        """알림 처리"""
+        """알림 처리 (오류 방지 및 최적화 적용)"""
         try:
-            symbol = stock_data['symbol']
+            # [수정됨] .get() 사용으로 KeyError 방지
+            symbol = stock_data.get('symbol', 'UNKNOWN')
             market = stock_data.get('market', 'US')
+            trigger_type = stock_data.get('trigger_type', '')
             
             if not self.should_alert(symbol, market):
                 logger.info(f"⏭️ {symbol} 쿨다운 중")
                 return
             
+            # [최적화] 뉴스 알림은 AI 분석 없이 바로 전송 (API 절약 및 속도 향상)
+            if trigger_type == 'news' or trigger_type == 'news_sentiment' or symbol == 'KR_NEWS':
+                news_url = stock_data.get('news_url') or stock_data.get('url', '#')
+                title = stock_data.get('title', '제목 없음')
+                msg = f"📰 **뉴스 속보**\n\n**{title}**\n\n[기사 보기]({news_url})"
+                await self.telegram.send_message(msg)
+                logger.info(f"✅ {symbol} 뉴스 알림 전송 완료")
+                return
+
+            # [보호] AI 분석 전 5초 대기 (API Rate Limit 방지)
+            await asyncio.sleep(5)
             logger.info(f"🔍 {symbol} 분석 중...")
             
             # AI 분석
@@ -127,36 +128,34 @@ class GlobalStockAlertSystem:
             logger.info(f"✅ {symbol} 알림 전송 (점수: {analysis['score']}/10)")
             
         except Exception as e:
-            await self.send_error_alert(f"알림 처리 오류 ({stock_data.get('symbol', 'UNKNOWN')}): {e}")
+            # 에러 발생 시 로그만 남기고 봇이 죽지 않도록 처리
+            logger.error(f"알림 처리 중 건너뜀 ({stock_data.get('symbol', 'UNKNOWN')}): {e}")
     
     def format_alert_message(self, stock, analysis):
         """알림 메시지 포맷"""
         market = stock.get('market', 'US')
         market_emoji = "🇰🇷" if market == 'KR' else "🇺🇸"
         
-        if analysis['score'] >= 9:
-            urgency = "🚨 **텐배거 가능성** 🚨"
-        elif analysis['score'] >= 8:
-            urgency = "⚠️ **HIGH PRIORITY** ⚠️"
-        else:
-            urgency = "📢 **OPPORTUNITY** 📢"
+        if analysis['score'] >= 9: urgency = "🚨 **텐배거 가능성** 🚨"
+        elif analysis['score'] >= 8: urgency = "⚠️ **HIGH PRIORITY** ⚠️"
+        else: urgency = "📢 **OPPORTUNITY** 📢"
         
         msg = f"{urgency}\n\n"
         msg += f"{market_emoji} **AI 점수: {analysis['score']}/10**\n\n"
         
         if market == 'KR':
             msg += f"**{stock.get('name', '')}** ({stock['symbol']})\n"
-            msg += f"현재가: {stock['price']:,}원\n"
+            msg += f"현재가: {stock.get('price', 0):,}원\n"
         else:
             msg += f"**${stock['symbol']}**\n"
-            msg += f"현재가: ${stock['price']:.2f}\n"
+            msg += f"현재가: ${stock.get('price', 0):.2f}\n"
         
-        msg += f"변화: **{stock['change_percent']:+.2f}%**\n"
+        msg += f"변화: **{stock.get('change_percent', 0):+.2f}%**\n"
         
         if stock.get('volume', 0) > 0:
             msg += f"거래량: {stock['volume']:,}\n"
         
-        msg += f"\n**트리거:** {stock['trigger_reason']}\n\n"
+        msg += f"\n**트리거:** {stock.get('trigger_reason', '알 수 없음')}\n\n"
         
         msg += f"**🤖 AI 분석**\n"
         msg += f"_{analysis['summary']}_\n\n"
@@ -184,10 +183,7 @@ class GlobalStockAlertSystem:
         return msg
     
     async def scan_us_stocks(self):
-        """미국 주식 스캔"""
-        if not self.is_us_market_hours():
-            return []
-        
+        if not self.is_us_market_hours(): return []
         alerts = []
         try:
             results = await asyncio.gather(
@@ -196,62 +192,35 @@ class GlobalStockAlertSystem:
                 self.us_social.scan(),
                 return_exceptions=True
             )
-            
             for result in results:
                 if isinstance(result, Exception):
                     logger.error(f"미국 스캐너 오류: {result}")
                     continue
                 if result:
-                    # market 태그 추가
-                    for alert in result:
-                        alert['market'] = 'US'
+                    for alert in result: alert['market'] = 'US'
                     alerts.extend(result)
-            
-            if alerts:
-                logger.info(f"🇺🇸 미국: {len(alerts)}개 발견")
-            
+            if alerts: logger.info(f"🇺🇸 미국: {len(alerts)}개 발견")
         except Exception as e:
             await self.send_error_alert(f"미국 스캔 오류: {e}")
-        
         return alerts
     
     async def scan_kr_stocks(self):
-        """한국 주식 스캔"""
-        if not self.is_kr_market_hours():
-            return []
-        
+        if not self.is_kr_market_hours(): return []
         alerts = []
         try:
             alerts = await self.kr_scanner.scan()
-            
-            if alerts:
-                logger.info(f"🇰🇷 한국: {len(alerts)}개 발견")
-            
+            if alerts: logger.info(f"🇰🇷 한국: {len(alerts)}개 발견")
         except Exception as e:
             await self.send_error_alert(f"한국 스캔 오류: {e}")
-        
         return alerts
     
     async def run(self):
-        """메인 루프"""
         logger.info("🌍 글로벌 주식 알림 시스템 시작")
-        
         try:
-            start_msg = "✅ **글로벌 주식 알림 시작**\n\n"
-            start_msg += "🇺🇸 미국 주식 모니터링\n"
-            start_msg += "🇰🇷 한국 주식 모니터링\n\n"
-            start_msg += "⏰ 시작: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n\n"
-            start_msg += "📊 **감지 항목:**\n"
-            start_msg += "• 실시간 뉴스\n"
-            start_msg += "• 가격 급등/급락\n"
-            start_msg += "• 소셜 트렌드\n"
-            start_msg += "• AI 자동 분석\n\n"
-            start_msg += "💡 중요 알림만 보내드립니다!"
-            
+            start_msg = "✅ **글로벌 주식 알림 시작**\n\n🇺🇸 미국 주식 모니터링\n🇰🇷 한국 주식 모니터링\n\n"
+            start_msg += "⏰ 시작: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             await self.telegram.send_message(start_msg)
-            
-        except Exception as e:
-            logger.error(f"시작 메시지 전송 실패: {e}")
+        except Exception as e: logger.error(f"시작 메시지 전송 실패: {e}")
         
         scan_interval = 30
         error_count = 0
@@ -259,38 +228,27 @@ class GlobalStockAlertSystem:
         
         while True:
             try:
-                # 양쪽 동시 스캔
                 us_alerts, kr_alerts = await asyncio.gather(
                     self.scan_us_stocks(),
                     self.scan_kr_stocks()
                 )
-                
                 all_alerts = us_alerts + kr_alerts
-                
                 if all_alerts:
                     logger.info(f"📬 총 {len(all_alerts)}개 알림 처리 중")
                     for alert in all_alerts:
                         await self.process_alert(alert)
                         await asyncio.sleep(2)
-                
                 await asyncio.sleep(scan_interval)
                 error_count = 0
-                
             except KeyboardInterrupt:
-                logger.info("🛑 종료 중...")
-                await self.telegram.send_message("⚠️ 시스템 종료됨")
                 break
-                
             except Exception as e:
                 error_count += 1
                 logger.error(f"❌ 메인 루프 오류 ({error_count}/{max_errors}): {e}")
                 await self.send_error_alert(f"메인 루프 오류: {e}")
-                
                 if error_count >= max_errors:
-                    critical_msg = f"🚨 **시스템 중단**\n\n연속 오류 {max_errors}회\n재시작 필요"
-                    await self.telegram.send_message(critical_msg)
+                    await self.telegram.send_message("🚨 **시스템 중단**\n\n연속 오류 발생")
                     break
-                
                 await asyncio.sleep(60)
 
 if __name__ == "__main__":
