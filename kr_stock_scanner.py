@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import aiohttp
 import asyncio
 from datetime import datetime
@@ -112,6 +113,7 @@ class KRStockScanner:
                             # 쿨다운 체크
                             if code in self.alerted_stocks:
                                 last_alert = self.alerted_stocks[code]
+                                # [수정] .seconds -> .total_seconds() 로 변경
                                 if (datetime.now() - last_alert).total_seconds() < self.cooldown:
                                     continue
 

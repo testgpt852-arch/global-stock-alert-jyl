@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import logging
 from datetime import datetime
@@ -82,7 +83,8 @@ class GlobalStockAlertSystem:
         alert_key = f"{market}_{symbol}"
         if alert_key in self.alerted_stocks:
             last_alert = self.alerted_stocks[alert_key]
-            if (now - last_alert).seconds < self.alert_cooldown:
+            # [수정] .seconds -> .total_seconds() 로 변경하여 24시간 이상 경과도 정확히 계산
+            if (now - last_alert).total_seconds() < self.alert_cooldown:
                 return False
         self.alerted_stocks[alert_key] = now
         return True
