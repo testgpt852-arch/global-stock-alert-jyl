@@ -19,13 +19,12 @@ class AIAnalyzer:
             # [최신] google.genai 클라이언트
             self.client = genai.Client(api_key=self.api_key)
             
-        # [핵심] 사용자님 API 키로 확인된 "가장 똑똑한 순서" 배치
+# [수정됨] 무료 계정에서 'limit: 0' 뜨는 Pro 모델 제거
+        # 방금 성공한 '3 Flash Preview'를 1순위로 승격
         self.models = [
-            'gemini-3-pro-preview',     # 1순위: 현존 최강 지능 (Generation 3 Pro)
-            'gemini-2.5-pro',           # 2순위: 검증된 고지능 (Generation 2.5 Pro)
-            'gemini-3-flash-preview',   # 3순위: 차세대 밸런스 (Generation 3 Flash)
-            'gemini-2.5-flash',         # 4순위: 표준 모델
-            'gemma-3-27b-it',           # 5순위: 최후의 보루 (Gemma 최상위)
+            'gemini-3-flash-preview',   # 1순위: 방금 성공한 모델 (가장 똑똑하고 빠름)
+            'gemini-2.5-flash',         # 2순위: 든든한 국밥 같은 안정성
+            'gemma-3-27b-it',           # 3순위: 백업용 오픈 모델
         ]
 
     async def _fetch_news_content(self, url):
