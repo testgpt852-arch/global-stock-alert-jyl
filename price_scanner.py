@@ -1,127 +1,151 @@
 import aiohttp
 import asyncio
 import logging
-import re  # [추가됨] 텍스트에서 숫자만 추출하기 위한 도구
 from bs4 import BeautifulSoup
+from datetime import datetime
+import pytz 
 from config import Config
 
 logger = logging.getLogger(__name__)
 
 class PriceScanner:
     def __init__(self, av_key=None, finnhub_key=None):
-        self.url = "https://finance.yahoo.com/markets/stocks/gainers/"
         self.last_scan_result = set()
+        
+        # 1. 정규장 급등 (Regular Market)
+        self.url_regular = "https://finance.yahoo.com/markets/stocks/gainers/"
+        
+        # 2. 프리마켓 급등 (Pre-Market) - 토스(Toss)와 같은 데이터
+        self.url_premarket = "https://finance.yahoo.com/markets/stocks/pre-market/"
 
     async def scan(self):
-        """야후 파이낸스 실시간 급등주 크롤링 (인덱스 3번 파싱 버전)"""
+        """현재 시간에 맞는 시장 데이터를 가져옴"""
+        
+        # 한국 시간 기준 현재 시간 확인
+        kst = pytz.timezone('Asia/Seoul')
+        now = datetime.now(kst)
+        
+        target_urls = []
+        
+        # [시간대 자동 감지]
+        # 프리마켓(데이마켓): 한국시간 오후 5시 ~ 밤 11시 30분
+        # 이 시간대에는 야후 메인(Regular)이 멈춰있으므로 Pre-Market을 봐야 함
+        if 16 <= now.hour < 23 or (now.hour == 23 and now.minute < 30):
+            logger.info(f"🕒 [프리마켓] 장전 거래 데이터를 스캔합니다.")
+            target_urls.append(("PRE", self.url_premarket))
+        else:
+            logger.info(f"🕒 [정규장] 실시간 거래 데이터를 스캔합니다.")
+            target_urls.append(("REG", self.url_regular))
+            # 정규장 초반에는 프리마켓 데이터도 유효할 수 있으므로 필요시 추가 가능
+        
+        all_alerts = []
+        
+        for market_type, url in target_urls:
+            alerts = await self._fetch_data(url, market_type)
+            all_alerts.extend(alerts)
+            
+        return all_alerts
+
+    async def _fetch_data(self, url, market_type):
         alerts = []
-        
-        # print(f"\n--- 스캔 시작: {self.url} ---")
-        
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             }
             
-            async with aiohttp.ClientSession(max_field_size=32768, max_line_size=32768) as session:
-                async with session.get(self.url, headers=headers, timeout=10) as response:
-                    
+            # [오류 해결 핵심] max_field_size를 65536(64KB)으로 늘려 야후의 대용량 헤더를 받아냄
+            async with aiohttp.ClientSession(
+                headers=headers,
+                max_field_size=65536, 
+                max_line_size=65536
+            ) as session:
+                async with session.get(url, timeout=10) as response:
                     if response.status != 200:
-                        logger.error(f"Yahoo Connection Error: {response.status}")
+                        logger.error(f"접속 실패 ({url}): {response.status}")
                         return alerts
                     
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    table = soup.find('table')
-                    if not table:
-                        return alerts
-                        
-                    rows = table.find('tbody').find_all('tr')
+                    rows = soup.select('table tbody tr')
                     
                     for row in rows:
                         try:
-                            cols = row.find_all('td')
-                            # 인덱스 6(거래량)까지 필요하므로 최소 7개 확인
-                            if len(cols) < 7:
-                                continue
+                            cols = row.select('td')
+                            if len(cols) < 6: continue
                             
-                            # --- 데이터 추출 ---
+                            symbol_div = cols[0].select_one('.symbol') or cols[0]
+                            symbol = symbol_div.get_text(strip=True).split(' ')[0]
                             
-                            # 1. 심볼 (인덱스 0)
-                            symbol_text = cols[0].get_text(strip=True)
-                            symbol = symbol_text.split(' ')[0].strip()
+                            price_text = cols[1].get_text(strip=True).replace(',', '')
+                            price = float(price_text)
                             
-                            # 2. 현재가 (인덱스 3: "426.58+78.62..." 형태)
-                            raw_price_text = cols[3].get_text(strip=True)
-                            # 정규식으로 '숫자.숫자' 또는 '숫자' 패턴 중 맨 앞의 것만 찾음
-                            match = re.match(r"([\d,.]+)", raw_price_text)
-                            if not match:
-                                continue
-                            price_str = match.group(1).replace(',', '')
+                            change_text = cols[3].get_text(strip=True).replace('%', '').replace('+', '').replace(',', '')
+                            change_pct = float(change_text)
                             
-                            # 3. 등락률 (인덱스 5: "+22.59%" 형태)
-                            change_str = cols[5].get_text(strip=True).replace(',', '').replace('%', '').replace('+', '')
+                            vol_text = cols[5].get_text(strip=True)
+                            volume = self.parse_volume(vol_text)
                             
-                            # 4. 거래량 (인덱스 6: "670,929" 형태)
-                            vol_str = cols[6].get_text(strip=True).replace(',', '')
+                            trade_value_usd = price * volume
+                            
+                            # ===============================================
+                            # 🦁 하이에나 모드 (토스 괴물 잡기)
+                            # ===============================================
+                            
+                            # 1. 가격: $0.5 미만 휴지조각만 제외 (동전주 허용)
+                            if price < 0.5: continue
 
-                            # --- 숫자 변환 ---
-                            try:
-                                price = float(price_str)
-                                change_pct = float(change_str)
+                            # 2. 거래대금 조건
+                            # 프리마켓은 유동성이 적으므로 30억($2M)만 터져도 1위급
+                            threshold = 2000000 if market_type == "PRE" else 10000000
+                            
+                            if trade_value_usd < threshold: continue
+
+                            # 3. 등락률: 최소 5% 이상
+                            if change_pct < 5.0: continue
+
+                            # 4. 메시지 작성
+                            market_label = "☀️[프리]" if market_type == "PRE" else "🌕[정규]"
+                            
+                            if change_pct >= 100.0:
+                                msg = f'{market_label} 2배 폭등! +{change_pct:.1f}%'
+                            elif change_pct >= 50.0:
+                                msg = f'{market_label} 미친 급등 +{change_pct:.1f}%'
+                            elif change_pct >= 20.0:
+                                msg = f'{market_label} 폭등 감지 +{change_pct:.1f}%'
+                            else:
+                                msg = f'{market_label} 급등 출발 +{change_pct:.1f}%'
+
+                            # 중복 방지 (등락률 2% 변동 시 재알림)
+                            scan_id = f"{symbol}_{int(change_pct/2)}" 
+                            if scan_id in self.last_scan_result: continue
                                 
-                                # 거래량 M/B/k 처리
-                                if 'M' in vol_str:
-                                    volume = float(vol_str.replace('M', '')) * 1_000_000
-                                elif 'B' in vol_str:
-                                    volume = float(vol_str.replace('B', '')) * 1_000_000_000
-                                elif 'k' in vol_str.lower():
-                                    volume = float(vol_str.lower().replace('k', '')) * 1_000
-                                else:
-                                    volume = float(vol_str) if vol_str.replace('.', '').isdigit() else 0
-                                    
-                                volume = int(volume)
-                                
-                            except ValueError:
-                                # 숫자 변환 실패 시 스킵
-                                continue
-
-                            # --- 필터링 로직 ---
-                            
-                            # 1. 가격 범위
-                            if not (Config.MIN_PRICE <= price <= Config.MAX_PRICE):
-                                continue
-                                
-                            # 2. 변동률 (설정값보다 작으면 제외)
-                            if change_pct < Config.MIN_PRICE_CHANGE:
-                                continue
-
-                            # 3. 중복 방지
-                            scan_id = f"{symbol}_{int(price)}"
-                            if scan_id in self.last_scan_result:
-                                continue
-
                             alerts.append({
                                 'symbol': symbol,
                                 'price': price,
                                 'change_percent': change_pct,
                                 'volume': volume,
-                                'trigger_type': 'market_mover',
-                                'trigger_reason': f'🔥 실시간 급등 Top 20 ({change_pct:+.2f}%)'
+                                'trade_value_usd': trade_value_usd,
+                                'trigger_type': 'price_surge',
+                                'trigger_reason': f"{msg} (거래대금 ${int(trade_value_usd/1000000)}M)"
                             })
-                            
                             self.last_scan_result.add(scan_id)
                             
-                        except Exception:
-                            continue
+                        except Exception: continue
             
-            # 캐시 비우기
-            if len(self.last_scan_result) > 500:
-                self.last_scan_result.clear()
-                
+            if len(self.last_scan_result) > 1000: self.last_scan_result.clear()
+            
         except Exception as e:
-            logger.error(f"Yahoo scan error: {e}")
-        
+            logger.error(f"Scan Error ({url}): {e}")
+            
         return alerts
+
+    def parse_volume(self, text):
+        text = text.upper().replace(',', '')
+        try:
+            if 'B' in text: return float(text.replace('B', '')) * 1_000_000_000
+            elif 'M' in text: return float(text.replace('M', '')) * 1_000_000
+            elif 'K' in text: return float(text.replace('K', '')) * 1_000
+            else: return float(text)
+        except: return 0.0

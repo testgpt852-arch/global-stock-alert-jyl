@@ -13,10 +13,9 @@ class KRStockScanner:
         self.telegram = telegram_bot
         self.ai = ai_analyzer
         self.alerted_stocks = {}
-        self.cooldown = 3600
+        self.cooldown = 7200 # 2시간 쿨다운
         
     async def scan(self):
-        """전체 스캔"""
         all_alerts = []
         try:
             results = await asyncio.gather(
@@ -32,58 +31,36 @@ class KRStockScanner:
         return all_alerts
     
     async def scan_naver_news(self):
-        """네이버 뉴스 스캔 (구조 변경 대응)"""
+        """네이버 뉴스 스캔 (기존 동일)"""
         alerts = []
         try:
             url = "https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=258"
-            
             async with aiohttp.ClientSession() as session:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://finance.naver.com/'
-                }
+                headers = {'User-Agent': 'Mozilla/5.0'}
                 async with session.get(url, headers=headers, timeout=10) as response:
                     if response.status != 200: return alerts
-                    
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # [수정] 네이버 뉴스 리스트 찾는 3중 안전장치
-                    # 1. dl.articleList 안의 dd.articleSubject (가장 일반적)
                     news_candidates = soup.select('dl.articleList dd.articleSubject a')
-                    
-                    # 2. 없으면 ul.realtimeNewsList 안의 dl > dd > a (실시간 리스트)
-                    if not news_candidates:
-                        news_candidates = soup.select('ul.realtimeNewsList dl dd.articleSubject a')
-                        
-                    # 3. 그래도 없으면 dt.articleSubject (썸네일 없는 기사)
-                    if not news_candidates:
-                        news_candidates = soup.select('dt.articleSubject a')
+                    if not news_candidates: news_candidates = soup.select('ul.realtimeNewsList dl dd.articleSubject a')
+                    if not news_candidates: news_candidates = soup.select('dt.articleSubject a')
 
-                    for news in news_candidates[:20]:
+                    for news in news_candidates[:15]:
                         try:
                             title = news.get('title') or news.get_text(strip=True)
                             if not title: continue
-                            
                             link = news['href']
                             if not link.startswith('http'): link = "https://finance.naver.com" + link
-                            
-                            # 키워드 검사
+                            if link in self.alerted_stocks: continue
                             if self.is_important_kr_news(title):
-                                alerts.append({
-                                    'title': title,
-                                    'news_url': link,
-                                    'trigger_type': 'news',
-                                    'trigger_reason': '📰 네이버 특징주 뉴스'
-                                })
+                                self.alerted_stocks[link] = datetime.now()
+                                alerts.append({'title': title, 'news_url': link, 'trigger_type': 'news', 'trigger_reason': '📰 특징주 뉴스'})
                         except: continue
-        except Exception as e:
-            logger.error(f"네이버 뉴스 오류: {e}")
-        
+        except Exception: pass
         return alerts
     
     async def scan_price_surge(self):
-        """급등주 스캔 (기존 유지)"""
+        """급등주 스캔 (시가총액 필터 적용)"""
         alerts = []
         try:
             url = "https://finance.naver.com/sise/sise_quant.naver"
@@ -93,7 +70,7 @@ class KRStockScanner:
                     if response.status != 200: return alerts
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
-                    rows = soup.select('table.type_2 tr')[2:22]
+                    rows = soup.select('table.type_2 tr')[2:100]
                     
                     for row in rows:
                         try:
@@ -103,15 +80,48 @@ class KRStockScanner:
                             if not name_elem: continue
                             
                             name = name_elem.get_text(strip=True)
-                            code = re.search(r'code=(\d+)', name_elem['href']).group(1)
-                            price = int(cols[2].get_text(strip=True).replace(',', ''))
-                            change_pct = float(cols[4].get_text(strip=True).replace('%', '').replace('+', ''))
-                            volume = int(cols[6].get_text(strip=True).replace(',', ''))
+                            code_match = re.search(r'code=(\d+)', name_elem['href'])
+                            if not code_match: continue
+                            code = code_match.group(1)
                             
-                            if change_pct < 5.0: continue
-                            if not (1000 <= price <= 500000): continue
+                            price_txt = cols[2].get_text(strip=True).replace(',', '')
+                            price = int(price_txt) if price_txt.isdigit() else 0
+                            
+                            change_txt = cols[4].get_text(strip=True).replace('%', '').replace('+', '').strip()
+                            change_pct = float(change_txt) if change_txt.replace('.','',1).isdigit() else 0.0
+                            
+                            vol_txt = cols[6].get_text(strip=True).replace(',', '')
+                            volume = int(vol_txt) if vol_txt.isdigit() else 0
+                            
+                            # 거래대금 (억 단위)
+                            trade_value_100m = (price * volume) / 100000000
+
+                            # ============================================
+                            # 🎯 1. 1차 필터 (기본 조건)
+                            # ============================================
+                            if price < 1000: continue        # 동전주 삭제
+                            if price > 100000: continue      # 10만원 이상 황제주 삭제 (무거움)
+                            if change_pct < 4.0: continue    # 4% 미만 짤짤이 삭제
+                            if trade_value_100m < 50: continue # 50억 미만 거래대금 삭제 (확 상향)
+
+                            # 쿨다운 체크
                             if code in self.alerted_stocks:
-                                if (datetime.now() - self.alerted_stocks[code]).seconds < self.cooldown: continue
+                                last_alert = self.alerted_stocks[code]
+                                if (datetime.now() - last_alert).total_seconds() < self.cooldown:
+                                    continue
+
+                            # ============================================
+                            # 🎯 2. 2차 필터 (시가총액 조회 - 무거운 놈 쳐내기)
+                            # ============================================
+                            market_cap_100m = await self.get_market_cap(code, session)
+                            
+                            # 시총 8,000억 이상이면 "너무 무겁다" 판단하여 패스
+                            # (단, 거래대금이 2,000억 이상 터진 초대박 주도주는 예외적으로 허용)
+                            if market_cap_100m > 8000 and trade_value_100m < 2000:
+                                continue
+
+                            # 알림 사유 작성
+                            reason = f"💎 가벼운 급등주 (시총 {int(market_cap_100m)}억)\n💰 거래대금 {int(trade_value_100m)}억 터짐 (+{change_pct:.1f}%)"
                             
                             self.alerted_stocks[code] = datetime.now()
                             alerts.append({
@@ -120,14 +130,50 @@ class KRStockScanner:
                                 'price': price,
                                 'change_percent': change_pct,
                                 'volume': volume,
+                                'trade_value_100m': trade_value_100m,
                                 'trigger_type': 'price_surge',
-                                'trigger_reason': f'🔥 거래량 폭발 급등 (+{change_pct:.1f}%)',
+                                'trigger_reason': reason,
                                 'news_url': f"https://finance.naver.com/item/main.naver?code={code}"
                             })
-                        except: continue
+                            
+                        except Exception: continue
         except Exception: pass
         return alerts
-    
+
+    async def get_market_cap(self, code, session):
+        """종목 상세 페이지에서 시가총액(억 단위) 파싱"""
+        try:
+            url = f"https://finance.naver.com/item/main.naver?code={code}"
+            async with session.get(url, timeout=5) as response:
+                if response.status != 200: return 999999 # 에러나면 무거운 걸로 간주해서 스킵
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # 시가총액 찾기 (네이버 금융 상세페이지 구조)
+                mc_elem = soup.select_one('#_market_sum')
+                if mc_elem:
+                    mc_text = mc_elem.get_text(strip=True)
+                    # "1조 2,345" -> 12345 (억 단위 변환)
+                    mc_text = mc_text.replace(',', '').replace('조', '')
+                    # 1조가 넘으면 '조'를 없애고 단위를 맞춰야 함.
+                    # 하지만 네이버는 '1조 2345' 형태로 줌. 단순 replace하면 '1 2345'가 됨.
+                    # 간단하게 텍스트 길이와 패턴으로 추정
+                    
+                    # 정확한 파싱 로직
+                    val = 0
+                    if '조' in mc_elem.get_text():
+                        parts = mc_elem.get_text().split('조')
+                        trillion = int(re.sub(r'\D', '', parts[0])) * 10000
+                        billion = 0
+                        if len(parts) > 1 and parts[1].strip():
+                            billion = int(re.sub(r'\D', '', parts[1]))
+                        val = trillion + billion
+                    else:
+                        val = int(re.sub(r'\D', '', mc_elem.get_text()))
+                    return val
+        except: pass
+        return 999999 # 파싱 실패 시 안전하게 큰 값 반환 (알림 제외)
+
     def is_important_kr_news(self, title):
         has_pos = any(kw in title for kw in Config.POSITIVE_KEYWORDS)
         has_neg = any(kw in title for kw in Config.NEGATIVE_KEYWORDS)
