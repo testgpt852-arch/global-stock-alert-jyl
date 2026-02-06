@@ -32,7 +32,7 @@ class GlobalStockAlertSystem:
             self.kr_scanner = KRStockScanner(self.telegram, self.ai)
             
             self.alerted_stocks = {}
-            self.alert_cooldown = 14400  # 1시간
+            self.alert_cooldown = 14400  # 4시간
             
             logger.info("✅ 시스템 초기화 완료")
             
@@ -43,10 +43,10 @@ class GlobalStockAlertSystem:
     async def send_error_alert(self, error):
         """오류 텔레그램 알림"""
         try:
-            msg = f"⚠️ **시스템 오류**\n\n```\n{str(error)}\n```\n\n"
-            msg += f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            await self.telegram.send_message(msg)
-            logger.error(f"오류 알림 전송: {error}")
+            # 에러 알림은 너무 자주 오면 시끄러우므로 로그에만 남김 (필요시 주석 해제)
+            # msg = f"⚠️ **시스템 오류**\n\n```\n{str(error)}\n```"
+            # await self.telegram.send_message(msg)
+            logger.error(f"오류 발생: {error}")
         except Exception as e:
             logger.critical(f"오류 알림 실패: {e}")
     
@@ -88,48 +88,48 @@ class GlobalStockAlertSystem:
         return True
     
     async def process_alert(self, stock_data):
-        """알림 처리 (오류 방지 및 최적화 적용)"""
+        """알림 처리 (AI 분석 무조건 실행 / KeyError 방지 적용)"""
         try:
-            # [수정됨] .get() 사용으로 KeyError 방지
+            # [수정 1] .get()으로 KeyError 방지 (symbol이 없으면 UNKNOWN 처리)
             symbol = stock_data.get('symbol', 'UNKNOWN')
             market = stock_data.get('market', 'US')
             trigger_type = stock_data.get('trigger_type', '')
             
+            # 쿨다운 체크
             if not self.should_alert(symbol, market):
-                logger.info(f"⏭️ {symbol} 쿨다운 중")
+                logger.info(f"⏭️ {symbol} 쿨다운 중 (이미 보냄)")
                 return
             
-            # [최적화] 뉴스 알림은 AI 분석 없이 바로 전송 (API 절약 및 속도 향상)
-            if trigger_type == 'news' or trigger_type == 'news_sentiment' or symbol == 'KR_NEWS':
-                news_url = stock_data.get('news_url') or stock_data.get('url', '#')
-                title = stock_data.get('title', '제목 없음')
-                msg = f"📰 **뉴스 속보**\n\n**{title}**\n\n[기사 보기]({news_url})"
-                await self.telegram.send_message(msg)
-                logger.info(f"✅ {symbol} 뉴스 알림 전송 완료")
-                return
+            # [수정 2] 기존 코드에서 뉴스일 때 'return' 해버리던 부분 삭제함.
+            # 이제 뉴스 데이터도 아래쪽의 self.ai.analyze_opportunity를 통과하게 됨.
 
-            # [보호] AI 분석 전 5초 대기 (API Rate Limit 방지)
+            # [API 보호] AI 분석 전 5초 대기
             await asyncio.sleep(5)
-            logger.info(f"🔍 {symbol} 분석 중...")
+            logger.info(f"🔍 {symbol} AI 분석 진입...")
             
-            # AI 분석
+            # AI 분석 수행
             analysis = await self.ai.analyze_opportunity(stock_data)
             
-            if analysis['score'] < self.config.MIN_AI_SCORE:
-                logger.info(f"⏭️ {symbol} 점수 낮음: {analysis['score']}/10")
+            # [수정 3] 점수 필터링 로직 세분화
+            # 뉴스는 정보성 가치가 중요하므로 4점 이상이면 전송
+            # 급등주는 위험하므로 6점(기본값) 이상이어야 전송
+            min_score = 4 if trigger_type in ['news', 'news_sentiment'] or symbol == 'KR_NEWS' else self.config.MIN_AI_SCORE
+            
+            if analysis['score'] < min_score:
+                logger.info(f"🗑️ {symbol} 점수 미달로 폐기 ({analysis['score']}점 < {min_score}점)")
                 return
             
-            # 알림 생성
+            # 알림 메시지 포맷팅
             message = self.format_alert_message(stock_data, analysis)
             
             # 전송
             await self.telegram.send_message(message)
             
-            logger.info(f"✅ {symbol} 알림 전송 (점수: {analysis['score']}/10)")
+            logger.info(f"✅ {symbol} 알림 전송 완료 (점수: {analysis['score']}/10)")
             
         except Exception as e:
-            # 에러 발생 시 로그만 남기고 봇이 죽지 않도록 처리
-            logger.error(f"알림 처리 중 건너뜀 ({stock_data.get('symbol', 'UNKNOWN')}): {e}")
+            # 에러 로그는 남기되, 봇이 멈추지 않게 함
+            logger.error(f"알림 처리 중 에러 발생 ({stock_data.get('symbol', 'UNKNOWN')}): {e}")
     
     def format_alert_message(self, stock, analysis):
         """알림 메시지 포맷"""
@@ -144,13 +144,16 @@ class GlobalStockAlertSystem:
         msg += f"{market_emoji} **AI 점수: {analysis['score']}/10**\n\n"
         
         if market == 'KR':
-            msg += f"**{stock.get('name', '')}** ({stock['symbol']})\n"
-            msg += f"현재가: {stock.get('price', 0):,}원\n"
+            # KR_NEWS 같은 가상 심볼인 경우 이름이 없으면 타이틀로 대체
+            name = stock.get('name', stock.get('symbol'))
+            msg += f"**{name}**\n"
+            if stock.get('price'): msg += f"현재가: {stock.get('price', 0):,}원\n"
         else:
             msg += f"**${stock['symbol']}**\n"
-            msg += f"현재가: ${stock.get('price', 0):.2f}\n"
+            if stock.get('price'): msg += f"현재가: ${stock.get('price', 0):.2f}\n"
         
-        msg += f"변화: **{stock.get('change_percent', 0):+.2f}%**\n"
+        if stock.get('change_percent'):
+            msg += f"변화: **{stock.get('change_percent', 0):+.2f}%**\n"
         
         if stock.get('volume', 0) > 0:
             msg += f"거래량: {stock['volume']:,}\n"
@@ -160,22 +163,25 @@ class GlobalStockAlertSystem:
         msg += f"**🤖 AI 분석**\n"
         msg += f"_{analysis['summary']}_\n\n"
         
-        msg += f"**📈 전략**\n"
-        
-        if market == 'KR':
-            msg += f"진입: {int(analysis['entry_price']):,}원\n"
-            msg += f"목표: {int(analysis['target_price']):,}원 **(+{analysis['upside']:.0f}%)**\n"
-            msg += f"손절: {int(analysis['stop_loss']):,}원 (-{analysis['risk']:.0f}%)\n\n"
-        else:
-            msg += f"진입: ${analysis['entry_price']:.2f}\n"
-            msg += f"목표: ${analysis['target_price']:.2f} **(+{analysis['upside']:.0f}%)**\n"
-            msg += f"손절: ${analysis['stop_loss']:.2f} (-{analysis['risk']:.0f}%)\n\n"
+        # 전략 섹션 (가격이 있는 경우에만 표시)
+        if stock.get('price', 0) > 0:
+            msg += f"**📈 전략**\n"
+            if market == 'KR':
+                msg += f"진입: {int(analysis['entry_price']):,}원\n"
+                msg += f"목표: {int(analysis['target_price']):,}원 **(+{analysis['upside']:.0f}%)**\n"
+                msg += f"손절: {int(analysis['stop_loss']):,}원 (-{analysis['risk']:.0f}%)\n\n"
+            else:
+                msg += f"진입: ${analysis['entry_price']:.2f}\n"
+                msg += f"목표: ${analysis['target_price']:.2f} **(+{analysis['upside']:.0f}%)**\n"
+                msg += f"손절: ${analysis['stop_loss']:.2f} (-{analysis['risk']:.0f}%)\n\n"
         
         msg += f"**⚠️ 리스크:** {analysis['risk_level']}\n"
         msg += f"**💰 권장비중:** {analysis['position_size']}%\n\n"
         
-        if stock.get('news_url'):
-            msg += f"[📰 뉴스보기]({stock['news_url']})\n\n"
+        # 뉴스 링크 처리
+        news_url = stock.get('news_url') or stock.get('url')
+        if news_url:
+            msg += f"[📰 뉴스 원문 보기]({news_url})\n\n"
         
         msg += f"_{analysis['reasoning']}_\n\n"
         msg += f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -217,8 +223,9 @@ class GlobalStockAlertSystem:
     async def run(self):
         logger.info("🌍 글로벌 주식 알림 시스템 시작")
         try:
-            start_msg = "✅ **글로벌 주식 알림 시작**\n\n🇺🇸 미국 주식 모니터링\n🇰🇷 한국 주식 모니터링\n\n"
-            start_msg += "⏰ 시작: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            start_msg = "✅ **글로벌 주식 알림 시스템 재가동**\n\n"
+            start_msg += "📌 수정사항:\n1. 'Unknown symbol' 오류 수정\n2. 뉴스 AI 분석 기능 복구\n"
+            start_msg += f"⏰ 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             await self.telegram.send_message(start_msg)
         except Exception as e: logger.error(f"시작 메시지 전송 실패: {e}")
         
