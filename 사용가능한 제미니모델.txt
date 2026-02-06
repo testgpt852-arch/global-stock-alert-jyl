@@ -1,0 +1,46 @@
+PS C:\Users\skwns\OneDrive\Desktop\global-stock-alert-jyl> py -3.12 check_real_names.py
+⚠️ 설정 오류: 누락된 API 키: ['TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID', 'FINNHUB_API_KEY', 'ALPHA_VANTAGE_KEY']
+
+📋 [내 API 키로 쓸 수 있는 진짜 모델 명단]
+============================================================
+🔹 ID: gemma-3n-e4b-it
+   ✨ (Gemma 3도 여기 있습니다!)
+🔹 ID: gemma-3n-e2b-it
+   ✨ (Gemma 3도 여기 있습니다!)
+🔹 ID: gemma-3-4b-it
+   ✨ (Gemma 3도 여기 있습니다!)
+🔹 ID: gemma-3-27b-it
+   ✨ (Gemma 3도 여기 있습니다!)
+🔹 ID: gemma-3-1b-it
+   ✨ (Gemma 3도 여기 있습니다!)
+🔹 ID: gemma-3-12b-it
+   ✨ (Gemma 3도 여기 있습니다!)
+🔹 ID: gemini-robotics-er-1.5-preview
+🔹 ID: gemini-pro-latest
+🔹 ID: gemini-flash-lite-latest
+🔹 ID: gemini-flash-latest
+🔹 ID: gemini-exp-1206
+🔹 ID: gemini-embedding-001
+🔹 ID: gemini-3-pro-preview
+   ✨ (오! 여기 Gemini 3가 숨어있었네요!)
+🔹 ID: gemini-3-pro-image-preview
+   ✨ (오! 여기 Gemini 3가 숨어있었네요!)
+🔹 ID: gemini-3-flash-preview
+   ✨ (오! 여기 Gemini 3가 숨어있었네요!)
+🔹 ID: gemini-2.5-pro-preview-tts
+🔹 ID: gemini-2.5-pro
+🔹 ID: gemini-2.5-flash-preview-tts
+🔹 ID: gemini-2.5-flash-preview-09-2025
+🔹 ID: gemini-2.5-flash-native-audio-preview-12-2025
+🔹 ID: gemini-2.5-flash-native-audio-preview-09-2025
+🔹 ID: gemini-2.5-flash-native-audio-latest
+🔹 ID: gemini-2.5-flash-lite-preview-09-2025
+🔹 ID: gemini-2.5-flash-lite
+🔹 ID: gemini-2.5-flash-image
+🔹 ID: gemini-2.5-flash
+🔹 ID: gemini-2.5-computer-use-preview-10-2025
+🔹 ID: gemini-2.0-flash-lite-001
+🔹 ID: gemini-2.0-flash-lite
+🔹 ID: gemini-2.0-flash-exp-image-generation
+🔹 ID: gemini-2.0-flash-001
+🔹 ID: gemini-2.0-flash

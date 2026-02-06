@@ -1,4 +1,6 @@
-import google.generativeai as genai
+# -*- coding: utf-8 -*-
+from google import genai
+from google.genai import types
 import logging
 import json
 import asyncio
@@ -14,23 +16,24 @@ class AIAnalyzer:
         if not self.api_key:
             logger.error("❌ Gemini API Key가 설정되지 않았습니다.")
         else:
-            genai.configure(api_key=self.api_key)
+            # [최신] google.genai 클라이언트
+            self.client = genai.Client(api_key=self.api_key)
             
-        # 최신 모델 리스트 (사용자 지정)
+        # [핵심] 사용자님 API 키로 확인된 "가장 똑똑한 순서" 배치
         self.models = [
-            'gemini-2.5-flash',      # 1순위: 밸런스 최강
-            'gemini-2.5-flash-lite', # 2순위: 속도
-            'gemini-3-flash',        # 3순위: 성능
-            'gemma-3-27b',           # 4순위: 백업
+            'gemini-3-pro-preview',     # 1순위: 현존 최강 지능 (Generation 3 Pro)
+            'gemini-2.5-pro',           # 2순위: 검증된 고지능 (Generation 2.5 Pro)
+            'gemini-3-flash-preview',   # 3순위: 차세대 밸런스 (Generation 3 Flash)
+            'gemini-2.5-flash',         # 4순위: 표준 모델
+            'gemma-3-27b-it',           # 5순위: 최후의 보루 (Gemma 최상위)
         ]
 
     async def _fetch_news_content(self, url):
-        """뉴스 링크에 직접 접속하여 본문 텍스트를 긁어옴"""
+        """뉴스 링크에 접속하여 본문 추출"""
         if not url or not url.startswith('http'):
             return "본문 수집 불가 (잘못된 URL)"
             
         try:
-            # 봇 차단 방지용 헤더
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
@@ -42,25 +45,24 @@ class AIAnalyzer:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    # 불필요한 스크립트/스타일 제거
+                    # 광고/스크립트 제거
                     for script in soup(["script", "style", "nav", "footer", "header"]):
                         script.decompose()
                         
-                    # 본문 텍스트 추출 (p 태그 위주)
+                    # 텍스트 추출
                     text = ' '.join([p.get_text() for p in soup.find_all('p')])
                     
-                    # 너무 짧으면 전체 텍스트 긁기
                     if len(text) < 100:
                         text = soup.get_text(separator=' ', strip=True)
                         
-                    # AI 토큰 절약을 위해 길이 제한 (약 2000자)
-                    return text[:2000] + "..." if len(text) > 2000 else text
+                    # AI 입력 한계 고려 (약 3000자 제한)
+                    return text[:3000] + "..." if len(text) > 3000 else text
                     
         except Exception as e:
             return f"본문 수집 중 에러: {str(e)}"
 
     async def analyze_opportunity(self, stock_data):
-        """주식/뉴스 데이터 종합 분석 (본문 크롤링 + 호환성 패치 적용)"""
+        """최신 라이브러리 + 지능 순위 모델 적용 분석"""
         
         symbol = stock_data.get('symbol', 'UNKNOWN')
         price = stock_data.get('price', 'N/A')
@@ -69,16 +71,15 @@ class AIAnalyzer:
         title = stock_data.get('title', 'N/A')
         reason = stock_data.get('trigger_reason', '')
         
-        # [기능 1] 뉴스 링크가 있으면 본문을 긁어옴
+        # 1. 뉴스 본문 수집
         news_url = stock_data.get('news_url') or stock_data.get('url')
         news_content = "링크 없음"
         
         if news_url:
-            # 뉴스 트리거이거나 KR_NEWS인 경우 본문 수집
             if 'news' in stock_data.get('trigger_type', '') or symbol == 'KR_NEWS':
                 news_content = await self._fetch_news_content(news_url)
         
-        # 프롬프트 구성 (본문 포함)
+        # 2. 프롬프트 작성 (금융 전문가 페르소나)
         prompt = f"""
         Act as a Wall Street Hedge Fund Manager. Analyze this stock opportunity.
         
@@ -94,12 +95,12 @@ class AIAnalyzer:
         {news_content}
 
         [Task]
-        1. Read the 'News Body Context' carefully. Does it contain real substance (contracts, numbers, approvals)?
-        2. Give a score (1-10) based on short-term profit potential.
-        3. Suggest a trading strategy.
+        1. Read the 'News Body Context' carefully. Look for KEYWORDS: FDA approval, DOJ contract, Takeover, Earnings Beat.
+        2. Evaluate if this is a real catalyst for >200% gain or just noise.
+        3. Score (1-10) for short-term profit potential.
         
         [Output Format]
-        Provide ONLY a JSON object (No Markdown):
+        Provide ONLY a JSON object:
         {{
             "score": <number 1-10>,
             "summary": "<One line catchy summary in Korean>",
@@ -115,31 +116,26 @@ class AIAnalyzer:
         }}
         """
 
+        # 3. 모델 순차 실행 (똑똑한 순서대로)
         for model_name in self.models:
             try:
-                model = genai.GenerativeModel(model_name)
-                
-                # [기능 2] 구버전 라이브러리 호환성 패치
-                try:
-                    response = await model.generate_content_async(
-                        prompt, 
-                        generation_config={"response_mime_type": "application/json"}
+                # 최신 google.genai 방식 호출
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
                     )
-                except Exception as e:
-                    # 라이브러리 버전 이슈로 에러 발생 시 일반 모드로 재시도
-                    if "Unknown field" in str(e) or "response_mime_type" in str(e):
-                        logger.warning(f"⚠️ 구버전 라이브러리 감지: {model_name} 일반 모드 사용")
-                        response = await model.generate_content_async(prompt)
-                    else:
-                        raise e
+                )
 
-                # 응답 파싱
                 text = response.text.strip()
                 if text.startswith("```"):
                     text = text.replace("```json", "").replace("```", "")
                 
                 result = json.loads(text)
                 
+                # 성공 시 바로 리턴
                 return {
                     "score": result.get("score", 5),
                     "summary": result.get("summary", "분석 완료"),
@@ -155,14 +151,16 @@ class AIAnalyzer:
                 }
                 
             except Exception as e:
-                logger.warning(f"⚠️ Model [{model_name}] failed: {e}. Trying next...")
+                # 에러 발생 시 로그 남기고 다음 모델(차선책)로 넘어감
+                logger.warning(f"⚠️ [{model_name}] 분석 실패: {e} -> 다음 모델 시도")
                 continue
         
-        logger.error("❌ All AI models failed.")
+        # 모든 모델 실패 시
+        logger.error("❌ 모든 AI 모델이 응답하지 않습니다.")
         return {
             "score": 0,
             "summary": "AI 분석 실패",
-            "reasoning": "AI 연결 오류",
+            "reasoning": "시스템 오류",
             "risk_level": "Unknown",
             "recommendation": "Wait",
             "entry_price": 0, "target_price": 0, "stop_loss": 0,
