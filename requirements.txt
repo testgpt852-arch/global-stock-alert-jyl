@@ -1,0 +1,9 @@
+google-genai
+python-dotenv
+aiohttp
+beautifulsoup4
+requests
+pytz
+lxml
+feedparser
+yfinance
